@@ -1,0 +1,98 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v2.0.1)'
+        required: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Build installer packages
+      run: |
+        python setup.py
+        
+    - name: Create version info
+      run: |
+        echo ${{ github.ref_name }} > version.txt
+        
+    - name: Package installer
+      run: |
+        cd dist/installer
+        powershell Compress-Archive -Path * -DestinationPath ../../TheOriginals-Installer-${{ github.ref_name }}.zip
+        cd ../..
+        
+    - name: Package portable version
+      run: |
+        cd dist/portable
+        powershell Compress-Archive -Path * -DestinationPath ../../TheOriginals-Portable-${{ github.ref_name }}.zip
+        cd ../..
+        
+    - name: Create Release Notes
+      run: |
+        echo "# The Originals ${{ github.ref_name }}" > release_notes.md
+        echo "" >> release_notes.md
+        echo "## What's New" >> release_notes.md
+        echo "- Professional installer package" >> release_notes.md
+        echo "- Enhanced user interface" >> release_notes.md
+        echo "- Improved node management" >> release_notes.md
+        echo "- Real-time status indicators" >> release_notes.md
+        echo "- Admin user management" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "## Downloads" >> release_notes.md
+        echo "- **Installer Package**: Full installation with shortcuts and uninstaller" >> release_notes.md
+        echo "- **Portable Version**: No installation required, runs from any folder" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "## System Requirements" >> release_notes.md
+        echo "- Windows 10/11" >> release_notes.md
+        echo "- Python 3.8+ (automatically installed)" >> release_notes.md
+        echo "- 4GB RAM recommended" >> release_notes.md
+        echo "- Java 17+ for Minecraft server" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "## Default Login" >> release_notes.md
+        echo "- Username: admin" >> release_notes.md
+        echo "- Password: admin123" >> release_notes.md
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: "The Originals ${{ github.ref_name }}"
+        body_path: release_notes.md
+        files: |
+          TheOriginals-Installer-${{ github.ref_name }}.zip
+          TheOriginals-Portable-${{ github.ref_name }}.zip
+          version.txt
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Update latest release info
+      run: |
+        echo '{"version": "${{ github.ref_name }}", "date": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'", "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/TheOriginals-Installer-${{ github.ref_name }}.zip"}' > latest.json
+        
+    - name: Upload latest release info
+      uses: actions/upload-artifact@v3
+      with:
+        name: latest-release-info
+        path: latest.json 
