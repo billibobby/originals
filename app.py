@@ -28,6 +28,12 @@ import paramiko
 from updater import create_update_routes, get_update_javascript
 from crash_reporter import setup_crash_reporting
 
+# Import validation utilities
+from utils.security import validate_server_command, validate_input, sanitize_filename
+from utils.validation import InputValidator, SCHEMAS
+from backup_system import get_backup_manager, initialize_backup_system
+from performance_monitor import get_performance_monitor, initialize_performance_monitoring
+
 # Load environment variables
 load_dotenv()
 
@@ -52,6 +58,9 @@ limiter = Limiter(
     storage_uri="memory://",
     strategy="fixed-window"
 )
+
+# Initialize input validator
+input_validator = InputValidator()
 
 # Global variables
 server_process = None
@@ -81,6 +90,8 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
     is_active = db.Column(db.Boolean, default=True)
+    failed_login_attempts = db.Column(db.Integer, default=0)
+    last_failed_login = db.Column(db.DateTime)
     
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -909,26 +920,41 @@ def get_server_stats():
 
 @app.route('/api/server/command', methods=['POST'])
 @login_required
+@limiter.limit("30 per minute")
 def send_server_command():
-    """Send command to server"""
-    if not current_user.has_permission('server_control'):
-        return jsonify({'success': False, 'message': 'Permission denied'}), 403
-    
-    data = request.json
-    command = data.get('command', '').strip()
-    
-    if not command:
-        return jsonify({'success': False, 'message': 'No command provided'})
-    
-    # Security: Only allow safe commands
-    safe_commands = ['list', 'tps', 'help', 'say', 'tell', 'gamemode', 'tp', 'give', 'time']
-    command_base = command.split()[0].lower()
-    
-    if command_base not in safe_commands:
-        return jsonify({'success': False, 'message': f'Command "{command_base}" is not allowed'})
-    
-    success, message = server_manager.send_server_command(command)
-    return jsonify({'success': success, 'message': message})
+    """Send command to server with enhanced validation"""
+    try:
+        if not current_user.has_permission('server_control'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        data = request.json or {}
+        command = data.get('command', '').strip()
+        
+        if not command:
+            return jsonify({'success': False, 'message': 'No command provided'}), 400
+        
+        # Use the security module's command validation
+        is_valid, result = validate_server_command(command)
+        
+        if not is_valid:
+            return jsonify({'success': False, 'message': result}), 400
+        
+        # result is the sanitized command at this point
+        sanitized_command = result
+        
+        # Log the command execution attempt
+        print(f"[SECURITY] Command executed by {current_user.username}: {sanitized_command}")
+        
+        success, message = server_manager.send_server_command(sanitized_command)
+        
+        if success:
+            return jsonify({'success': True, 'message': message})
+        else:
+            return jsonify({'success': False, 'message': message}), 500
+            
+    except Exception as e:
+        print(f"[ERROR] Server command error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Server error occurred'}), 500
 
 @app.route('/api/server/players')
 @login_required
@@ -1138,6 +1164,273 @@ def stop_tunnel():
     success, message = tunnel_manager.stop_tunnel()
     return jsonify({'success': success, 'message': message})
 
+# Backup API routes
+@app.route('/api/backup/status')
+@login_required
+def get_backup_status():
+    """Get backup system status"""
+    try:
+        if not current_user.has_permission('server_control'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        backup_manager = get_backup_manager()
+        status = backup_manager.get_backup_status()
+        
+        return jsonify({
+            'success': True,
+            'status': status
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Backup status error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error retrieving backup status'}), 500
+
+@app.route('/api/backup/create', methods=['POST'])
+@login_required
+@limiter.limit("1 per 10 minutes")
+def create_backup():
+    """Create a new backup"""
+    try:
+        if not current_user.has_permission('server_control'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        data = request.json or {}
+        backup_type = data.get('type', 'full')
+        
+        backup_manager = get_backup_manager()
+        
+        if backup_type == 'full':
+            success, message = backup_manager.create_full_backup()
+        else:
+            return jsonify({'success': False, 'message': 'Invalid backup type'}), 400
+        
+        print(f"[BACKUP] Manual backup by {current_user.username}: {message}")
+        
+        return jsonify({
+            'success': success,
+            'message': message
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Backup creation error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error creating backup'}), 500
+
+@app.route('/api/backup/list')
+@login_required
+def list_backups():
+    """List all available backups"""
+    try:
+        if not current_user.has_permission('server_control'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        backup_manager = get_backup_manager()
+        backups = backup_manager.list_backups()
+        
+        return jsonify({
+            'success': True,
+            'backups': backups
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Backup listing error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error listing backups'}), 500
+
+@app.route('/api/backup/restore', methods=['POST'])
+@login_required
+@limiter.limit("1 per 30 minutes")
+def restore_backup():
+    """Restore from a backup"""
+    try:
+        if not current_user.has_permission('server_control'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        data = request.json or {}
+        backup_type = data.get('type')
+        backup_name = data.get('name')
+        
+        if not backup_type or not backup_name:
+            return jsonify({'success': False, 'message': 'Backup type and name required'}), 400
+        
+        backup_manager = get_backup_manager()
+        success, message = backup_manager.restore_backup(backup_type, backup_name)
+        
+        print(f"[BACKUP] Restore by {current_user.username}: {backup_type}/{backup_name} - {message}")
+        
+        return jsonify({
+            'success': success,
+            'message': message
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Backup restore error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error restoring backup'}), 500
+
+@app.route('/api/backup/cleanup', methods=['POST'])
+@login_required
+@limiter.limit("1 per hour")
+def cleanup_backups():
+    """Clean up old backups"""
+    try:
+        if not current_user.has_permission('server_control'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        backup_manager = get_backup_manager()
+        backup_manager.cleanup_old_backups()
+        
+        print(f"[BACKUP] Cleanup by {current_user.username}")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Backup cleanup completed'
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Backup cleanup error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error cleaning up backups'}), 500
+
+# Performance Monitoring API routes
+@app.route('/api/performance/metrics')
+@login_required
+def get_performance_metrics():
+    """Get recent performance metrics"""
+    try:
+        if not current_user.has_permission('server_view'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        hours = request.args.get('hours', 1, type=int)
+        hours = max(1, min(24, hours))  # Limit to 1-24 hours
+        
+        performance_monitor = get_performance_monitor()
+        metrics = performance_monitor.get_recent_metrics(hours)
+        
+        return jsonify({
+            'success': True,
+            'metrics': metrics,
+            'hours': hours
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Performance metrics error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error retrieving performance metrics'}), 500
+
+@app.route('/api/performance/historical')
+@login_required
+def get_historical_metrics():
+    """Get historical performance metrics"""
+    try:
+        if not current_user.has_permission('server_view'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        hours = request.args.get('hours', 24, type=int)
+        hours = max(1, min(168, hours))  # Limit to 1-168 hours (1 week)
+        
+        performance_monitor = get_performance_monitor()
+        metrics = performance_monitor.get_historical_metrics(hours)
+        
+        return jsonify({
+            'success': True,
+            'metrics': metrics,
+            'hours': hours
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Historical metrics error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error retrieving historical metrics'}), 500
+
+@app.route('/api/performance/alerts')
+@login_required
+def get_performance_alerts():
+    """Get performance alerts"""
+    try:
+        if not current_user.has_permission('server_view'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        performance_monitor = get_performance_monitor()
+        with performance_monitor.metrics_lock:
+            alerts = [alert.__dict__ for alert in performance_monitor.active_alerts]
+        
+        return jsonify({
+            'success': True,
+            'alerts': alerts
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Performance alerts error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error retrieving performance alerts'}), 500
+
+@app.route('/api/performance/alerts/<int:alert_id>/acknowledge', methods=['POST'])
+@login_required
+def acknowledge_alert(alert_id):
+    """Acknowledge a performance alert"""
+    try:
+        if not current_user.has_permission('server_control'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        performance_monitor = get_performance_monitor()
+        performance_monitor.acknowledge_alert(alert_id)
+        
+        print(f"[PERFORMANCE] Alert acknowledged by {current_user.username}: {alert_id}")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Alert acknowledged'
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Alert acknowledgment error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error acknowledging alert'}), 500
+
+@app.route('/api/performance/summary')
+@login_required
+def get_performance_summary():
+    """Get performance summary"""
+    try:
+        if not current_user.has_permission('server_view'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        performance_monitor = get_performance_monitor()
+        summary = performance_monitor._get_metrics_summary()
+        
+        return jsonify({
+            'success': True,
+            'summary': summary
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Performance summary error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error retrieving performance summary'}), 500
+
+@app.route('/api/performance/track', methods=['POST'])
+@login_required
+def track_user_activity():
+    """Track user activity manually"""
+    try:
+        data = request.json or {}
+        action = data.get('action', '')
+        details = data.get('details', '')
+        
+        if not action:
+            return jsonify({'success': False, 'message': 'Action is required'}), 400
+        
+        performance_monitor = get_performance_monitor()
+        performance_monitor.track_user_activity(
+            user_id=current_user.id,
+            username=current_user.username,
+            action=action,
+            details=details,
+            ip_address=request.remote_addr or '',
+            user_agent=request.headers.get('User-Agent', '')
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Activity tracked'
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Activity tracking error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error tracking activity'}), 500
+
 # Authentication Routes
 @app.route('/health')
 def health_check():
@@ -1239,83 +1532,158 @@ def detailed_health_check():
         }), 500
 
 @app.route('/login', methods=['GET', 'POST'])
+@limiter.limit("5 per minute")
 def login():
     if request.method == 'POST':
-        data = request.json if request.is_json else request.form
-        username = data.get('username')
-        password = data.get('password')
-        
-        user = User.query.filter_by(username=username).first()
-        
-        if user and user.check_password(password):
-            login_user(user)
-            user.last_login = datetime.utcnow()
-            db.session.commit()
+        try:
+            data = request.json if request.is_json else request.form
             
+            # Input validation
+            is_valid, errors = input_validator.validate_data(data, SCHEMAS['login'])
+            
+            if not is_valid:
+                error_message = list(errors.values())[0]  # Get first error
+                if request.is_json:
+                    return jsonify({'success': False, 'message': error_message}), 400
+                flash(error_message)
+                return render_template('login.html')
+            
+            username = data.get('username').strip().lower()
+            password = data.get('password')
+            
+            # Find user
+            user = User.query.filter_by(username=username).first()
+            
+            if user and user.check_password(password):
+                # Check if user is active
+                if not user.is_active:
+                    error_message = 'Account is deactivated'
+                    if request.is_json:
+                        return jsonify({'success': False, 'message': error_message}), 403
+                    flash(error_message)
+                    return render_template('login.html')
+                
+                # Successful login
+                login_user(user)
+                user.last_login = datetime.utcnow()
+                user.failed_login_attempts = 0  # Reset on successful login
+                db.session.commit()
+                
+                print(f"[AUTH] Successful login: {username}")
+                
+                if request.is_json:
+                    return jsonify({'success': True, 'message': 'Login successful'})
+                return redirect(url_for('index'))
+            
+            # Failed login
+            if user:
+                user.failed_login_attempts += 1
+                user.last_failed_login = datetime.utcnow()
+                db.session.commit()
+                
+                print(f"[AUTH] Failed login attempt: {username} (attempts: {user.failed_login_attempts})")
+            
+            error_message = 'Invalid username or password'
             if request.is_json:
-                return jsonify({'success': True, 'message': 'Login successful'})
-            return redirect(url_for('index'))
-        
-        if request.is_json:
-            return jsonify({'success': False, 'message': 'Invalid username or password'})
-        flash('Invalid username or password')
+                return jsonify({'success': False, 'message': error_message}), 401
+            flash(error_message)
+            
+        except Exception as e:
+            print(f"[ERROR] Login error: {str(e)}")
+            error_message = 'Login system error'
+            if request.is_json:
+                return jsonify({'success': False, 'message': error_message}), 500
+            flash(error_message)
     
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
+@limiter.limit("3 per minute")
 def register():
     # Check if this is an invitation registration
     invitation_code = session.get('invitation_code')
     
     if request.method == 'POST':
-        data = request.json if request.is_json else request.form
-        username = data.get('username')
-        email = data.get('email')
-        password = data.get('password')
-        display_name = data.get('display_name')
-        
-        # Check if user already exists
-        if User.query.filter_by(username=username).first():
+        try:
+            data = request.json if request.is_json else request.form
+            
+            # Input validation
+            is_valid, errors = input_validator.validate_data(data, SCHEMAS['user_registration'])
+            
+            if not is_valid:
+                error_message = list(errors.values())[0]  # Get first error
+                if request.is_json:
+                    return jsonify({'success': False, 'message': error_message}), 400
+                flash(error_message)
+                return render_template('register.html', invitation_code=invitation_code)
+            
+            username = data.get('username').strip().lower()
+            email = data.get('email').strip().lower()
+            password = data.get('password')
+            display_name = data.get('display_name', '').strip() or username
+            
+            # Check if user already exists
+            if User.query.filter_by(username=username).first():
+                error_message = 'Username already exists'
+                if request.is_json:
+                    return jsonify({'success': False, 'message': error_message}), 409
+                flash(error_message)
+                return render_template('register.html', invitation_code=invitation_code)
+            
+            if User.query.filter_by(email=email).first():
+                error_message = 'Email already registered'
+                if request.is_json:
+                    return jsonify({'success': False, 'message': error_message}), 409
+                flash(error_message)
+                return render_template('register.html', invitation_code=invitation_code)
+            
+            # Determine user role based on invitation or if first user
+            if User.query.count() == 0:
+                role = 'admin'  # First user is admin
+            elif invitation_code:
+                role = 'moderator'  # Invited users get moderator privileges
+            else:
+                role = 'user'  # Regular registration gets user role
+            
+            # Create new user
+            user = User(
+                username=username,
+                email=email,
+                display_name=display_name,
+                role=role
+            )
+            
+            try:
+                user.set_password(password)
+            except ValueError as e:
+                error_message = str(e)
+                if request.is_json:
+                    return jsonify({'success': False, 'message': error_message}), 400
+                flash(error_message)
+                return render_template('register.html', invitation_code=invitation_code)
+            
+            db.session.add(user)
+            db.session.commit()
+            
+            # Clear invitation code from session
+            if invitation_code:
+                session.pop('invitation_code', None)
+            
+            login_user(user)
+            
+            print(f"[AUTH] New user registered: {username} (role: {role})")
+            
             if request.is_json:
-                return jsonify({'success': False, 'message': 'Username already exists'})
-            flash('Username already exists')
-            return render_template('register.html', invitation_code=invitation_code)
-        
-        if User.query.filter_by(email=email).first():
+                return jsonify({'success': True, 'message': 'Registration successful'})
+            return redirect(url_for('index'))
+            
+        except Exception as e:
+            print(f"[ERROR] Registration error: {str(e)}")
+            db.session.rollback()
+            error_message = 'Registration system error'
             if request.is_json:
-                return jsonify({'success': False, 'message': 'Email already registered'})
-            flash('Email already registered')
-            return render_template('register.html', invitation_code=invitation_code)
-        
-        # Determine user role based on invitation or if first user
-        if User.query.count() == 0:
-            role = 'admin'  # First user is admin
-        elif invitation_code:
-            role = 'moderator'  # Invited users get moderator privileges
-        else:
-            role = 'user'  # Regular registration gets user role
-        
-        # Create new user
-        user = User(
-            username=username,
-            email=email,
-            display_name=display_name or username,
-            role=role
-        )
-        user.set_password(password)
-        
-        db.session.add(user)
-        db.session.commit()
-        
-        # Clear invitation code from session
-        if invitation_code:
-            session.pop('invitation_code', None)
-        
-        login_user(user)
-        
-        if request.is_json:
-            return jsonify({'success': True, 'message': 'Registration successful'})
-        return redirect(url_for('index'))
+                return jsonify({'success': False, 'message': error_message}), 500
+            flash(error_message)
     
     return render_template('register.html', invitation_code=invitation_code)
 
@@ -1551,30 +1919,128 @@ def node_info():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# WebSocket events
+# WebSocket Security Decorator
+def authenticated_socketio(f):
+    """Decorator to require authentication for WebSocket events"""
+    from functools import wraps
+    
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated:
+            emit('error', {'message': 'Authentication required'})
+            return
+        if not current_user.is_active:
+            emit('error', {'message': 'Account is deactivated'})
+            return
+        return f(*args, **kwargs)
+    return decorated_function
+
+def authorized_socketio(permission):
+    """Decorator to require specific permission for WebSocket events"""
+    def decorator(f):
+        from functools import wraps
+        
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not current_user.is_authenticated:
+                emit('error', {'message': 'Authentication required'})
+                return
+            if not current_user.has_permission(permission):
+                emit('error', {'message': 'Permission denied'})
+                return
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
 @socketio.on('connect')
+@authenticated_socketio
 def handle_connect():
-    """Handle client connection"""
-    emit('server_status', {'status': server_status})
+    """Handle client connection with authentication"""
+    try:
+        print(f"[WEBSOCKET] User connected: {current_user.username}")
+        emit('server_status', {'status': server_status})
+        emit('connection_status', {'message': 'Connected successfully', 'user': current_user.username})
+    except Exception as e:
+        print(f"[ERROR] WebSocket connection error: {str(e)}")
+        emit('error', {'message': 'Connection error'})
 
 @socketio.on('request_logs')
+@authenticated_socketio
 def handle_request_logs():
-    """Send recent logs to client"""
-    emit('server_logs', server_logs[-50:])
+    """Send recent logs to client with authentication"""
+    try:
+        if current_user.has_permission('server_view'):
+            emit('server_logs', server_logs[-50:])
+        else:
+            emit('error', {'message': 'Permission denied for server logs'})
+    except Exception as e:
+        print(f"[ERROR] WebSocket logs error: {str(e)}")
+        emit('error', {'message': 'Error retrieving logs'})
 
 @socketio.on('request_stats')
+@authenticated_socketio
 def handle_request_stats():
-    """Send server stats to client"""
-    stats = server_manager.get_server_stats()
-    emit('server_stats', stats)
+    """Send server stats to client with authentication"""
+    try:
+        if current_user.has_permission('server_view'):
+            stats = server_manager.get_server_stats()
+            emit('server_stats', stats)
+        else:
+            emit('error', {'message': 'Permission denied for server stats'})
+    except Exception as e:
+        print(f"[ERROR] WebSocket stats error: {str(e)}")
+        emit('error', {'message': 'Error retrieving stats'})
 
 @socketio.on('send_command')
+@authorized_socketio('server_control')
 def handle_send_command(data):
-    """Handle server command from client"""
-    command = data.get('command', '').strip()
-    if command:
-        success, message = server_manager.send_server_command(command)
-        emit('command_result', {'success': success, 'message': message, 'command': command})
+    """Handle server command from client with security validation"""
+    try:
+        if not data or not isinstance(data, dict):
+            emit('error', {'message': 'Invalid command data'})
+            return
+        
+        command = data.get('command', '').strip()
+        
+        if not command:
+            emit('error', {'message': 'No command provided'})
+            return
+        
+        # Use the same validation as the REST API
+        is_valid, result = validate_server_command(command)
+        
+        if not is_valid:
+            emit('command_result', {'success': False, 'message': result, 'command': command})
+            return
+        
+        # result is the sanitized command
+        sanitized_command = result
+        
+        # Log the command execution
+        print(f"[WEBSOCKET] Command by {current_user.username}: {sanitized_command}")
+        
+        success, message = server_manager.send_server_command(sanitized_command)
+        emit('command_result', {'success': success, 'message': message, 'command': sanitized_command})
+        
+    except Exception as e:
+        print(f"[ERROR] WebSocket command error: {str(e)}")
+        emit('error', {'message': 'Command execution error'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection"""
+    try:
+        if current_user.is_authenticated:
+            print(f"[WEBSOCKET] User disconnected: {current_user.username}")
+    except Exception as e:
+        print(f"[ERROR] WebSocket disconnect error: {str(e)}")
+
+# Enhanced WebSocket error handling
+@socketio.on_error_default
+def default_error_handler(e):
+    """Default error handler for WebSocket events"""
+    print(f"[ERROR] WebSocket error: {str(e)}")
+    emit('error', {'message': 'WebSocket error occurred'})
 
 if __name__ == '__main__':
     # Initialize enhanced logging system
@@ -1611,6 +2077,12 @@ if __name__ == '__main__':
     
     # Initialize enhanced auto-updater system
     updater = create_update_routes(app, socketio)
+
+    # Initialize backup system
+    initialize_backup_system()
+    
+    # Initialize performance monitoring
+    initialize_performance_monitoring()
     
     port = int(os.environ.get('SERVER_PORT', 3000))
     debug_mode = os.environ.get('DEBUG', 'False').lower() == 'true'

@@ -53,3 +53,6 @@ sphinx==7.2.6              # Documentation generation
 # Development Utilities
 python-magic==0.4.27       # File type detection for security
 cryptography==41.0.7       # Secure crypto operations 
+
+# Backup and Scheduling
+schedule==1.2.0 
