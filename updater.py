@@ -12,10 +12,9 @@ import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Callable
-from flask import request
 
 class EnhancedAutoUpdater:
-    def __init__(self, current_version="2.0.0", github_repo="haloj/the-originals"):
+    def __init__(self, current_version="2.0.0", github_repo="billibobby/originals"):
         self.current_version = current_version
         self.github_repo = github_repo
         self.github_api_url = f"https://api.github.com/repos/{github_repo}/releases/latest"
@@ -481,6 +480,7 @@ def create_update_routes(app, socketio):
     @app.route('/api/updates/check')
     def check_updates():
         """API endpoint to check for updates"""
+        from flask import request
         force_check = request.args.get('force', 'false').lower() == 'true'
         result = updater.check_for_updates(force_check=force_check)
         return result
@@ -493,6 +493,7 @@ def create_update_routes(app, socketio):
     @app.route('/api/updates/trigger', methods=['POST'])
     def manual_trigger():
         """API endpoint for manual update triggers"""
+        from flask import request
         data = request.get_json()
         trigger_text = data.get('text', '')
         
@@ -539,6 +540,7 @@ def create_update_routes(app, socketio):
     @app.route('/api/updates/config', methods=['GET', 'POST'])
     def update_config():
         """API endpoint to get/set update configuration"""
+        from flask import request
         if request.method == 'GET':
             return {
                 'check_interval': updater.check_interval,

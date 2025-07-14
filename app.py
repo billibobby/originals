@@ -22,8 +22,6 @@ import re
 import socket
 import nmap
 import paramiko
-import threading
-import json
 from updater import create_update_routes, get_update_javascript
 from crash_reporter import setup_crash_reporting
 
