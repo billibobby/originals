@@ -1,0 +1,9 @@
+{
+    "version": "2.0.0",
+    "release_notes": "Enhanced auto-update system with live notifications, hourly background checks, and manual triggers. Features secure download verification, real-time progress tracking, and improved user experience.",
+    "published_at": "2024-01-15T10:00:00Z",
+    "security_update": false,
+    "download_url": "https://github.com/haloj/the-originals/releases/latest/download/TheOriginals-Installer.zip",
+    "file_size": 52428800,
+    "checksum": "sha256:placeholder_checksum_here"
+} 

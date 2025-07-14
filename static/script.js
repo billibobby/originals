@@ -1212,7 +1212,7 @@ function showNodeGuide() {
     tempModal.firstElementChild.addEventListener('hidden.bs.modal', function() {
         document.body.removeChild(tempModal);
     });
-}
+} 
 
 function showAddNodeDialog() {
     const modal = new bootstrap.Modal(document.getElementById('addNodeModal'));
@@ -1561,22 +1561,11 @@ function showAbout() {
     });
 }
 
-function checkForUpdates() {
-    fetch('/api/updates/check')
-        .then(response => response.json())
-        .then(result => {
-            if (result.update_available) {
-                showUpdateNotification(result);
-            } else {
-                showNotification('You are running the latest version!', 'success');
-            }
-        })
-        .catch(error => {
-            showNotification('Failed to check for updates', 'error');
-        });
-}
+// Enhanced Auto-update client functionality
+let updateNotificationShown = false;
+let updateCheckInterval = null;
 
-// Auto-update client functionality
+// Enhanced Socket event handlers for updates
 socket.on('update_available', function(data) {
     showUpdateNotification(data);
 });
@@ -1585,71 +1574,281 @@ socket.on('update_progress', function(data) {
     updateProgressBar(data);
 });
 
+socket.on('update_error', function(data) {
+    showNotification('Update failed: ' + data.message, 'error');
+});
+
+socket.on('update_check_result', function(data) {
+    if (data.update_available) {
+        showUpdateNotification(data);
+    } else {
+        showNotification('You are running the latest version!', 'success');
+    }
+});
+
+socket.on('update_triggered', function(data) {
+    showNotification('Update check triggered!', 'info');
+    if (data.result.update_available) {
+        showUpdateNotification(data.result);
+    }
+});
+
+// Enhanced update notification with modern UI
 function showUpdateNotification(updateInfo) {
-    const notification = document.createElement('div');
-    notification.className = 'alert alert-info alert-dismissible fade show position-fixed';
-    notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
-    notification.innerHTML = `
-        <h6><i class="fas fa-download me-2"></i>Update Available!</h6>
-        <p>Version ${updateInfo.latest_version || updateInfo.version} is now available.</p>
-        <div class="d-flex gap-2">
-            <button class="btn btn-primary btn-sm" onclick="downloadUpdate()">
-                <i class="fas fa-download me-1"></i>Update Now
-            </button>
-            <button class="btn btn-outline-secondary btn-sm" onclick="showReleaseNotes()">
-                <i class="fas fa-file-alt me-1"></i>Release Notes
-            </button>
+    if (updateNotificationShown) return;
+    updateNotificationShown = true;
+    
+    const isSecurityUpdate = updateInfo.security_update;
+    const alertClass = isSecurityUpdate ? 'alert-warning' : 'alert-info';
+    const icon = isSecurityUpdate ? 'fas fa-shield-alt' : 'fas fa-download';
+    const priority = isSecurityUpdate ? 'SECURITY UPDATE' : 'UPDATE AVAILABLE';
+    
+    const fileSize = updateInfo.file_size ? formatFileSize(updateInfo.file_size) : 'Unknown size';
+    
+    const notification = `
+        <div class="alert ${alertClass} alert-dismissible fade show update-notification position-fixed" 
+             style="top: 20px; right: 20px; z-index: 9999; max-width: 400px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);" 
+             role="alert">
+            <div class="d-flex align-items-center mb-2">
+                <i class="${icon} me-2"></i>
+                <strong>${priority}</strong>
+            </div>
+            <h6 class="mb-1">Version ${updateInfo.version} Available!</h6>
+            <small class="text-muted">Current: ${updateInfo.current_version} | Size: ${fileSize}</small>
+            
+            ${updateInfo.release_notes ? `
+                <div class="mt-2 p-2 bg-light rounded">
+                    <small>${updateInfo.release_notes.substring(0, 200)}${updateInfo.release_notes.length > 200 ? '...' : ''}</small>
+                </div>
+            ` : ''}
+            
+            <div class="d-flex gap-2 mt-3">
+                <button class="btn btn-primary btn-sm" onclick="downloadUpdate()" ${isSecurityUpdate ? 'style="background-color: #dc3545; border-color: #dc3545;"' : ''}>
+                    <i class="fas fa-download me-1"></i>
+                    ${isSecurityUpdate ? 'Install Security Update' : 'Update Now'}
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="showReleaseNotes()">
+                    <i class="fas fa-file-alt me-1"></i>Details
+                </button>
+                <button class="btn btn-outline-danger btn-sm" onclick="dismissUpdate()">
+                    <i class="fas fa-times me-1"></i>Later
+                </button>
+            </div>
+            
+            <div class="progress mt-2 d-none" id="updateProgress">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                     role="progressbar" style="width: 0%"></div>
+            </div>
         </div>
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     `;
     
-    document.body.appendChild(notification);
+    document.body.insertAdjacentHTML('afterbegin', notification);
     
-    // Auto-remove after 30 seconds
-    setTimeout(() => {
-        if (notification.parentNode) {
-            notification.remove();
-        }
-    }, 30000);
+    // Auto-close after 30 seconds for non-security updates
+    if (!isSecurityUpdate) {
+        setTimeout(() => {
+            dismissUpdate();
+        }, 30000);
+    }
 }
 
+// Enhanced download function with progress
 async function downloadUpdate() {
-    if (!confirm('This will restart The Originals to apply the update. Continue?')) {
+    const notification = document.querySelector('.update-notification');
+    const progressBar = notification.querySelector('#updateProgress');
+    
+    if (!confirm('This will restart The Originals to apply the update. Any unsaved changes will be lost. Continue?')) {
         return;
     }
     
     try {
+        // Show progress bar
+        progressBar.classList.remove('d-none');
+        
         const response = await fetch('/api/updates/download', {
-            method: 'POST'
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
         });
         
         const result = await response.json();
         
         if (result.success) {
             showNotification('Update is downloading and will install automatically...', 'info');
+            
+            // Update button states
+            const buttons = notification.querySelectorAll('button');
+            buttons.forEach(btn => btn.disabled = true);
+            
         } else {
             showNotification('Update failed: ' + result.message, 'error');
+            progressBar.classList.add('d-none');
         }
     } catch (error) {
         showNotification('Update failed: ' + error.message, 'error');
+        progressBar.classList.add('d-none');
     }
 }
 
+// Enhanced progress bar updates
 function updateProgressBar(data) {
+    const progressBar = document.querySelector('#updateProgress .progress-bar');
+    const notification = document.querySelector('.update-notification');
+    
+    if (!progressBar || !notification) return;
+    
+    const progress = Math.round(data.progress || 0);
+    progressBar.style.width = progress + '%';
+    progressBar.textContent = progress + '%';
+    
     if (data.status === 'downloading') {
-        showNotification(`Downloading update... ${Math.round(data.progress)}%`, 'info');
+        const downloaded = data.downloaded ? formatFileSize(data.downloaded) : '';
+        const total = data.total ? formatFileSize(data.total) : '';
+        const sizeText = downloaded && total ? ` (${downloaded}/${total})` : '';
+        
+        notification.querySelector('h6').textContent = `Downloading... ${progress}%${sizeText}`;
+        progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-info';
+        
     } else if (data.status === 'installing') {
-        showNotification('Installing update... The application will restart shortly.', 'info');
+        notification.querySelector('h6').textContent = 'Installing update...';
+        progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-success';
+        progressBar.style.width = '100%';
+        progressBar.textContent = 'Installing...';
+        
+        // Show countdown
+        let countdown = 10;
+        const countdownInterval = setInterval(() => {
+            if (countdown <= 0) {
+                clearInterval(countdownInterval);
+                notification.querySelector('h6').textContent = 'Restarting application...';
+            } else {
+                notification.querySelector('h6').textContent = `Installing... Restarting in ${countdown}s`;
+                countdown--;
+            }
+        }, 1000);
     }
 }
 
+// Manual check function
+async function checkForUpdates() {
+    try {
+        showNotification('Checking for updates...', 'info');
+        
+        const response = await fetch('/api/updates/check?force=true');
+        const result = await response.json();
+        
+        if (result.update_available) {
+            showUpdateNotification(result);
+        } else {
+            showNotification('You are running the latest version!', 'success');
+        }
+    } catch (error) {
+        showNotification('Failed to check for updates: ' + error.message, 'error');
+    }
+}
+
+// Manual trigger via text input
+function handleManualTrigger(text) {
+    if (!text) return;
+    
+    fetch('/api/updates/trigger', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({text: text})
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.triggered) {
+            showNotification('Update check triggered!', 'info');
+            if (result.result.update_available) {
+                showUpdateNotification(result.result);
+            }
+        }
+    })
+    .catch(error => {
+        console.error('Manual trigger error:', error);
+    });
+}
+
+// Dismiss update notification
+function dismissUpdate() {
+    const notification = document.querySelector('.update-notification');
+    if (notification) {
+        notification.remove();
+        updateNotificationShown = false;
+    }
+}
+
+// Show release notes
 function showReleaseNotes() {
-    showNotification('Release notes feature ready for implementation!', 'info');
+    const notification = document.querySelector('.update-notification');
+    if (!notification) return;
+    
+    const releaseNotes = notification.querySelector('.bg-light').innerHTML;
+    const modal = `
+        <div class="modal fade" id="releaseNotesModal" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Release Notes</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        ${releaseNotes}
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.insertAdjacentHTML('beforeend', modal);
+    new bootstrap.Modal(document.getElementById('releaseNotesModal')).show();
 }
 
 function openSystemLogs() {
     showNotification('📄 System logs feature ready for implementation!', 'info');
 }
 
-// Auto-refresh tunnel status every 30 seconds
-setInterval(loadTunnelStatus, 30000); 
+// Initialize enhanced update system
+document.addEventListener('DOMContentLoaded', function() {
+    // Check for updates on page load (delayed to avoid conflicts)
+    setTimeout(checkForUpdates, 10000);
+    
+    // Set up periodic checks (every 30 minutes in foreground)
+    updateCheckInterval = setInterval(checkForUpdates, 30 * 60 * 1000);
+    
+    // Listen for manual triggers in command input
+    const commandInput = document.querySelector('#commandInput');
+    if (commandInput) {
+        commandInput.addEventListener('keyup', function(e) {
+            if (e.key === 'Enter') {
+                handleManualTrigger(this.value);
+            }
+        });
+    }
+    
+    // Listen for manual triggers in server command input
+    const serverCommandInput = document.querySelector('#serverCommandInput');
+    if (serverCommandInput) {
+        serverCommandInput.addEventListener('keyup', function(e) {
+            if (e.key === 'Enter') {
+                handleManualTrigger(this.value);
+            }
+        });
+    }
+    
+    // Clean up on page unload
+    window.addEventListener('beforeunload', function() {
+        if (updateCheckInterval) {
+            clearInterval(updateCheckInterval);
+        }
+    });
+});
+
+// Auto-refresh tunnel status every 30 seconds 

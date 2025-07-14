@@ -24,7 +24,7 @@ import nmap
 import paramiko
 import threading
 import json
-from updater import create_update_routes, UpdateService
+from updater import create_update_routes, get_update_javascript
 from crash_reporter import setup_crash_reporting
 
 # Load environment variables
@@ -1455,14 +1455,13 @@ if __name__ == '__main__':
     node_manager = NodeManager()
     node_manager.start_discovery()
     
-    # Initialize auto-updater system
-    create_update_routes(app, socketio)
-    update_service = UpdateService(app, socketio)
-    update_service.start_background_checker()
+    # Initialize enhanced auto-updater system
+    updater = create_update_routes(app, socketio)
     
     port = int(os.environ.get('SERVER_PORT', 3000))
     print("Starting The Originals - Minecraft Server Manager v2.0.0...")
     print(f"Access the web interface at: http://localhost:{port}")
     print("Default login: admin / admin123")
     print("Professional features: Auto-updates, Crash reporting, System tray")
+    print(f"[UPDATE] Background update checker started (interval: {updater.check_interval}s)")
     socketio.run(app, host='0.0.0.0', port=port, debug=True) 

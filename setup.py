@@ -1,339 +1,388 @@
+"""
+Setup script for The Originals - Minecraft Server Management Platform
+Supports building standalone executables and installing as Python package
+"""
+
 import os
 import sys
 import shutil
 import subprocess
 from pathlib import Path
+from setuptools import setup, find_packages, Command
+from setuptools.command.build import build
+from setuptools.command.install import install
 
-# Application metadata
-APP_NAME = "The Originals"
-APP_VERSION = "2.0.0"
-APP_DESCRIPTION = "Professional Minecraft Server Manager"
-APP_AUTHOR = "The Originals Team"
-APP_URL = "https://github.com/your-username/the-originals"
+# Package information
+PACKAGE_NAME = "the-originals"
+VERSION = "2.1.0"
+DESCRIPTION = "Professional Minecraft Server Management Platform"
+LONG_DESCRIPTION = """
+The Originals is a comprehensive, secure Minecraft server management platform that allows you to:
 
-def create_installer():
-    """Create Windows installer package"""
-    print("Creating The Originals Windows Installer...")
+- Manage multiple Minecraft servers across different computers
+- Install and manage mods from Modrinth
+- Create public tunnels for easy server sharing
+- Monitor server performance and resources
+- Automatically backup and update servers
+- Control everything through a beautiful web interface
+
+Features:
+✅ Multi-node server management
+✅ Secure command execution with injection prevention
+✅ Modern web interface with real-time updates
+✅ Automatic mod installation and management
+✅ Public tunnel creation with Cloudflare
+✅ Comprehensive logging and monitoring
+✅ Role-based user management
+✅ Auto-backup and update system
+"""
+
+AUTHOR = "The Originals Team"
+AUTHOR_EMAIL = "support@theoriginals.dev"
+URL = "https://github.com/haloj/the-originals"
+
+# Requirements
+INSTALL_REQUIRES = [
+    'Flask==2.3.3',
+    'Flask-SocketIO==5.3.6',
+    'Flask-SQLAlchemy==3.0.5',
+    'Flask-Login==0.6.2',
+    'Flask-WTF==1.1.1',
+    'Flask-Limiter==3.0.1',
+    'Werkzeug==2.3.7',
+    'bcrypt==4.0.1',
+    'requests==2.31.0',
+    'python-socketio==5.9.0',
+    'psutil==5.9.5',
+    'python-nmap==0.7.1',
+    'paramiko==3.3.1',
+    'python-dotenv==1.0.0',
+    'pyyaml==6.0.1',
+    'waitress==2.1.2',
+    'eventlet==0.33.3',
+    'pystray==0.19.5',
+    'pillow==10.1.0',
+    'cryptography==41.0.7',
+]
+
+BUILD_REQUIRES = [
+    'pyinstaller>=5.0.0',
+    'auto-py-to-exe>=2.30.0',
+] + INSTALL_REQUIRES
+
+DEV_REQUIRES = [
+    'pytest==7.4.3',
+    'pytest-cov==4.1.0',
+    'pytest-mock==3.11.1',
+    'pytest-flask==1.3.0',
+    'bandit==1.7.5',
+    'safety==2.3.4',
+    'mypy==1.7.1',
+    'black==23.11.0',
+    'flake8==6.1.0',
+    'radon==6.0.1',
+] + BUILD_REQUIRES
+
+
+class BuildExecutableCommand(Command):
+    """Custom command to build standalone executable using PyInstaller."""
     
-    # Create dist directory
-    dist_dir = Path("dist")
-    dist_dir.mkdir(exist_ok=True)
-    
-    # Create installer directory structure
-    installer_dir = dist_dir / "installer"
-    installer_dir.mkdir(exist_ok=True)
-    
-    app_dir = installer_dir / "app"
-    app_dir.mkdir(exist_ok=True)
-    
-    print("Setting up application structure...")
-    
-    # Copy application files
-    files_to_copy = [
-        "app.py",
-        "requirements.txt",
-        "run.bat",
-        "setup.bat",
-        "static/",
-        "templates/",
-        "minecraft_server/",
-        ".env.example"
+    description = 'Build standalone executable for distribution'
+    user_options = [
+        ('onefile', None, 'Create a single executable file'),
+        ('windowed', None, 'Create windowed application (no console)'),
+        ('debug', None, 'Create debug build with console output'),
     ]
     
-    for file_path in files_to_copy:
-        src = Path(file_path)
-        if src.exists():
-            if src.is_file():
-                shutil.copy2(src, app_dir / src.name)
-            else:
-                shutil.copytree(src, app_dir / src.name, dirs_exist_ok=True)
-            print(f"[OK] Copied {file_path}")
+    def initialize_options(self):
+        self.onefile = False
+        self.windowed = True
+        self.debug = False
     
-    # Create installer script
-    create_installer_script(installer_dir)
+    def finalize_options(self):
+        pass
     
-    # Create uninstaller script
-    create_uninstaller_script(installer_dir)
+    def run(self):
+        """Build the executable using PyInstaller."""
+        print("🔨 Building standalone executable...")
+        
+        # Install build requirements
+        subprocess.check_call([
+            sys.executable, '-m', 'pip', 'install', '--upgrade'
+        ] + BUILD_REQUIRES)
+        
+        # Prepare build directory
+        build_dir = Path('build')
+        dist_dir = Path('dist')
+        
+        # Clean previous builds
+        if build_dir.exists():
+            shutil.rmtree(build_dir)
+        if dist_dir.exists():
+            shutil.rmtree(dist_dir)
+        
+        # PyInstaller command
+        cmd = [
+            sys.executable, '-m', 'PyInstaller',
+            '--clean',
+            '--noconfirm',
+        ]
+        
+        if self.onefile:
+            cmd.append('--onefile')
+        else:
+            cmd.append('--onedir')
+        
+        if self.windowed:
+            cmd.append('--windowed')
+        else:
+            cmd.append('--console')
+        
+        if self.debug:
+            cmd.append('--debug=all')
+        
+        # Add icon if exists
+        icon_path = Path('static/favicon.ico')
+        if icon_path.exists():
+            cmd.extend(['--icon', str(icon_path)])
+        
+        # Add data files
+        cmd.extend([
+            '--add-data', 'templates;templates',
+            '--add-data', 'static;static',
+            '--add-data', 'minecraft_server;minecraft_server',
+        ])
+        
+        # Add cloudflared if exists
+        if Path('cloudflared.exe').exists():
+            cmd.extend(['--add-binary', 'cloudflared.exe;.'])
+        
+        # Hidden imports
+        hidden_imports = [
+            'flask', 'flask_sqlalchemy', 'flask_login', 'flask_socketio',
+            'werkzeug', 'eventlet', 'psutil', 'pystray', 'PIL',
+            'requests', 'paramiko', 'bcrypt', 'cryptography',
+            'models.user', 'models.node', 'models.server',
+            'utils.security', 'utils.validation', 'utils.logging_config'
+        ]
+        
+        for imp in hidden_imports:
+            cmd.extend(['--hidden-import', imp])
+        
+        # Main script
+        cmd.append('app.py')
+        
+        # Set name
+        cmd.extend(['--name', 'TheOriginals'])
+        
+        print(f"Running: {' '.join(cmd)}")
+        subprocess.check_call(cmd)
+        
+        print("✅ Executable built successfully!")
+        print(f"📁 Output directory: {dist_dir.absolute()}")
+        
+        # Create distribution package
+        self._create_distribution_package()
     
-    # Create desktop shortcut template
-    create_shortcut_template(installer_dir)
-    
-    # Create version info
-    create_version_info(installer_dir)
-    
-    print("[OK] Windows installer package created in dist/installer/")
-    print("[READY] Ready for distribution!")
+    def _create_distribution_package(self):
+        """Create a complete distribution package."""
+        print("📦 Creating distribution package...")
+        
+        package_dir = Path('dist/TheOriginals_Package')
+        package_dir.mkdir(exist_ok=True)
+        
+        # Copy executable
+        exe_src = Path('dist/TheOriginals.exe')
+        if exe_src.exists():
+            shutil.copy2(exe_src, package_dir)
+        else:
+            # Directory distribution
+            exe_dir = Path('dist/TheOriginals')
+            if exe_dir.exists():
+                shutil.copytree(exe_dir, package_dir / 'TheOriginals', dirs_exist_ok=True)
+        
+        # Copy additional files
+        additional_files = [
+            'README.md',
+            'LICENSE',
+            'IMPLEMENTATION_SUMMARY.md',
+        ]
+        
+        for file in additional_files:
+            if Path(file).exists():
+                shutil.copy2(file, package_dir)
+        
+        # Create setup guide
+        setup_guide = package_dir / 'SETUP_GUIDE.txt'
+        setup_guide.write_text("""
+THE ORIGINALS - SETUP GUIDE
+===========================
 
-def create_installer_script(installer_dir):
-    """Create Windows batch installer script"""
-    installer_script = f'''@echo off
-echo.
-echo ==========================================
-echo   {APP_NAME} v{APP_VERSION} Installer
-echo   {APP_DESCRIPTION}
-echo ==========================================
-echo.
+Thank you for downloading The Originals!
 
- :: Check for admin rights
- net session >nul 2>&1
- if %errorLevel% == 0 (
-     echo [OK] Running as Administrator
- ) else (
-     echo [ERROR] Please run as Administrator
-     echo Right-click and select "Run as administrator"
-     pause
-     exit /b 1
- )
+QUICK START:
+1. Run TheOriginals.exe
+2. Open your web browser to http://localhost:3000
+3. Create your admin account
+4. Start managing your Minecraft servers!
 
-:: Set installation directory
- set "INSTALL_DIR=%ProgramFiles%\\{APP_NAME}"
- set "START_MENU_DIR=%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\{APP_NAME}"
- 
- echo [INFO] Installing to: %INSTALL_DIR%
- echo.
- 
- :: Create installation directory
- if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
- 
- :: Copy application files
- echo [COPY] Copying application files...
- xcopy /E /I /Y "app\\*" "%INSTALL_DIR%\\"
- 
- :: Create start menu shortcut
- echo [SHORTCUT] Creating start menu shortcuts...
- if not exist "%START_MENU_DIR%" mkdir "%START_MENU_DIR%"
- 
- :: Create desktop shortcut
- echo [SHORTCUT] Creating desktop shortcut...
-powershell -Command "$WshShell = New-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\\Desktop\\{APP_NAME}.lnk'); $Shortcut.TargetPath = '%INSTALL_DIR%\\run.bat'; $Shortcut.WorkingDirectory = '%INSTALL_DIR%'; $Shortcut.Description = '{APP_DESCRIPTION}'; $Shortcut.Save()"
+FEATURES:
+✅ Multi-server management
+✅ Mod installation from Modrinth
+✅ Public tunnel creation
+✅ Performance monitoring
+✅ Automatic backups
+✅ User management
 
-:: Create start menu shortcut
-powershell -Command "$WshShell = New-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%START_MENU_DIR%\\{APP_NAME}.lnk'); $Shortcut.TargetPath = '%INSTALL_DIR%\\run.bat'; $Shortcut.WorkingDirectory = '%INSTALL_DIR%'; $Shortcut.Description = '{APP_DESCRIPTION}'; $Shortcut.Save()"
-
- :: Run initial setup
- echo [SETUP] Running initial setup...
- cd /d "%INSTALL_DIR%"
- call setup.bat
- 
- :: Register uninstaller
- echo [REGISTER] Registering uninstaller...
-reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{APP_NAME}" /v "DisplayName" /t REG_SZ /d "{APP_NAME}" /f
-reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{APP_NAME}" /v "DisplayVersion" /t REG_SZ /d "{APP_VERSION}" /f
-reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{APP_NAME}" /v "Publisher" /t REG_SZ /d "{APP_AUTHOR}" /f
-reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{APP_NAME}" /v "UninstallString" /t REG_SZ /d "%INSTALL_DIR%\\uninstall.bat" /f
-reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{APP_NAME}" /v "InstallLocation" /t REG_SZ /d "%INSTALL_DIR%" /f
-
- echo.
- echo [SUCCESS] Installation completed successfully!
- echo.
- echo [INFO] You can now run {APP_NAME} from:
- echo    - Desktop shortcut
- echo    - Start Menu
- echo    - Or navigate to: %INSTALL_DIR%
- echo.
- echo [LOGIN] Default login credentials:
- echo    Username: admin
- echo    Password: admin123
- echo.
- pause
-'''
-    
-    with open(installer_dir / "install.bat", "w") as f:
-        f.write(installer_script)
-    
-    print("[OK] Created installer script")
-
-def create_uninstaller_script(installer_dir):
-    """Create Windows uninstaller script"""
-    uninstaller_script = f'''@echo off
-echo.
-echo ==========================================
-echo   {APP_NAME} Uninstaller
-echo ==========================================
-echo.
-
-set "INSTALL_DIR=%ProgramFiles%\\{APP_NAME}"
-set "START_MENU_DIR=%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\{APP_NAME}"
-
-echo Are you sure you want to uninstall {APP_NAME}?
-echo This will remove all application files and settings.
-echo.
-set /p "confirm=Type 'yes' to continue: "
-
-if not "%confirm%"=="yes" (
-    echo Uninstallation cancelled.
-    pause
-    exit /b 0
-)
-
- echo.
- echo [REMOVE] Removing application files...
- 
- :: Stop any running instances
- taskkill /f /im python.exe >nul 2>&1
- 
- :: Remove shortcuts
- echo [REMOVE] Removing shortcuts...
- del "%USERPROFILE%\\Desktop\\{APP_NAME}.lnk" >nul 2>&1
- if exist "%START_MENU_DIR%" rmdir /s /q "%START_MENU_DIR%" >nul 2>&1
- 
- :: Remove application directory
- echo [REMOVE] Removing installation directory...
- if exist "%INSTALL_DIR%" (
-     rmdir /s /q "%INSTALL_DIR%"
- )
- 
- :: Remove registry entries
- echo [REMOVE] Removing registry entries...
- reg delete "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{APP_NAME}" /f >nul 2>&1
- 
- echo.
- echo [SUCCESS] {APP_NAME} has been uninstalled successfully!
-echo.
-pause
-'''
-    
-    with open(installer_dir / "app" / "uninstall.bat", "w") as f:
-        f.write(uninstaller_script)
-    
-    print("[OK] Created uninstaller script")
-
-def create_shortcut_template(installer_dir):
-    """Create application icon and shortcut templates"""
-    # Create a simple icon file (you can replace this with actual icon)
-    icon_content = '''
-# The Originals Application Icon
-# This is a placeholder - replace with actual .ico file
-# For professional distribution, create a proper icon file
-'''
-    
-    with open(installer_dir / "app" / "icon.txt", "w") as f:
-        f.write(icon_content)
-    
-    print("[OK] Created icon template")
-
-def create_version_info(installer_dir):
-    """Create version information file"""
-    version_info = {
-        "name": APP_NAME,
-        "version": APP_VERSION,
-        "description": APP_DESCRIPTION,
-        "author": APP_AUTHOR,
-        "url": APP_URL,
-        "build_type": "Professional",
-        "platform": "Windows",
-        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    }
-    
-    import json
-    with open(installer_dir / "app" / "version.json", "w") as f:
-        json.dump(version_info, f, indent=2)
-    
-    print("[OK] Created version info")
-
-def create_portable_version():
-    """Create portable version that doesn't require installation"""
-    print("[PORTABLE] Creating portable version...")
-    
-    portable_dir = Path("dist") / "portable"
-    portable_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Copy all necessary files
-    files_to_copy = [
-        "app.py",
-        "requirements.txt",
-        "setup.bat", 
-        "run.bat",
-        "static/",
-        "templates/",
-        ".env.example"
-    ]
-    
-    for file_path in files_to_copy:
-        src = Path(file_path)
-        if src.exists():
-            if src.is_file():
-                shutil.copy2(src, portable_dir / src.name)
-            else:
-                shutil.copytree(src, portable_dir / src.name, dirs_exist_ok=True)
-    
-    # Create portable launcher
-    portable_launcher = '''@echo off
-echo.
-echo ==========================================
-echo   The Originals v2.0.0 - Portable
-echo ==========================================
-echo.
-echo [START] Starting The Originals Minecraft Server Manager...
-echo.
-
-:: Check if setup has been run
-if not exist "minecraft_server_env" (
-    echo [SETUP] First time setup - Installing dependencies...
-    call setup.bat
-)
-
-:: Start the application
-call run.bat
-'''
-    
-    with open(portable_dir / "Start The Originals.bat", "w") as f:
-        f.write(portable_launcher)
-    
-    # Create README for portable version
-    readme_content = '''# The Originals - Portable Version
-
-This is the portable version of The Originals Minecraft Server Manager.
-
-## Quick Start:
-1. Double-click "Start The Originals.bat"
-2. Wait for setup to complete (first time only)
-3. Access the web interface at http://localhost:3000
-4. Login with: admin / admin123
-
-## Features:
-- No installation required
-- Runs from any folder
-- Includes all dependencies
-- Full server management capabilities
-
-## System Requirements:
+SYSTEM REQUIREMENTS:
 - Windows 10/11
-- Python 3.8+ (automatically installed)
-- 4GB RAM recommended
-- Java 17+ (for Minecraft server)
+- 2GB RAM minimum
+- 1GB disk space
+- Internet connection
 
-## Support:
-For help and updates, visit: https://github.com/your-username/the-originals
-'''
-    
-    with open(portable_dir / "README.txt", "w") as f:
-        f.write(readme_content)
-    
-    print("[OK] Portable version created in dist/portable/")
+TROUBLESHOOTING:
+- If the program doesn't start, run as Administrator
+- Check Windows Firewall isn't blocking the application
+- Ensure port 3000 is available
 
-if __name__ == "__main__":
-    print(f"[BUILD] Building {APP_NAME} v{APP_VERSION} Distribution Package")
-    print("=" * 60)
+SUPPORT:
+- GitHub: https://github.com/haloj/the-originals
+- Documentation: Check README.md
+
+Enjoy managing your Minecraft servers!
+        """.strip())
+        
+        print(f"✅ Distribution package created: {package_dir.absolute()}")
+
+
+class CleanCommand(Command):
+    """Custom command to clean build artifacts."""
     
-    try:
-        # Create installer package
-        create_installer()
+    description = 'Clean build artifacts'
+    user_options = []
+    
+    def initialize_options(self):
+        pass
+    
+    def finalize_options(self):
+        pass
+    
+    def run(self):
+        """Clean build directories."""
+        dirs_to_clean = ['build', 'dist', '*.egg-info', '__pycache__', '.pytest_cache']
         
-        # Create portable version
-        create_portable_version()
+        for pattern in dirs_to_clean:
+            for path in Path('.').glob(pattern):
+                if path.is_dir():
+                    print(f"Removing directory: {path}")
+                    shutil.rmtree(path)
+                else:
+                    print(f"Removing file: {path}")
+                    path.unlink()
+
+
+class TestCommand(Command):
+    """Custom command to run tests."""
+    
+    description = 'Run test suite'
+    user_options = [
+        ('coverage', None, 'Run with coverage report'),
+        ('security', None, 'Run security tests only'),
+    ]
+    
+    def initialize_options(self):
+        self.coverage = False
+        self.security = False
+    
+    def finalize_options(self):
+        pass
+    
+    def run(self):
+        """Run the test suite."""
+        # Install test requirements
+        subprocess.check_call([
+            sys.executable, '-m', 'pip', 'install', '--upgrade'
+        ] + DEV_REQUIRES)
         
-        print("\n" + "=" * 60)
-        print("[SUCCESS] Distribution packages created:")
-        print("[INSTALLER] Installer: dist/installer/")
-        print("[PORTABLE] Portable: dist/portable/")
-        print("\n[NEXT] Next steps:")
-        print("   1. Test the installer on a clean Windows machine")
-        print("   2. Create GitHub repository for releases")
-        print("   3. Set up auto-update system")
-        print("   4. Create professional icon (.ico file)")
-        print("   5. Code signing for security (optional)")
+        cmd = [sys.executable, '-m', 'pytest']
         
-    except Exception as e:
-        print(f"[ERROR] Error creating distribution package: {e}")
-        sys.exit(1) 
+        if self.security:
+            cmd.append('tests/test_security.py')
+        else:
+            cmd.append('tests/')
+        
+        if self.coverage:
+            cmd.extend(['--cov=.', '--cov-report=html', '--cov-report=term'])
+        
+        cmd.append('-v')
+        
+        subprocess.check_call(cmd)
+
+
+# Main setup configuration
+setup(
+    name=PACKAGE_NAME,
+    version=VERSION,
+    description=DESCRIPTION,
+    long_description=LONG_DESCRIPTION,
+    long_description_content_type='text/markdown',
+    author=AUTHOR,
+    author_email=AUTHOR_EMAIL,
+    url=URL,
+    packages=find_packages(),
+    include_package_data=True,
+    package_data={
+        '': ['templates/*', 'static/*', '*.md', '*.txt', '*.yaml', '*.yml'],
+    },
+    install_requires=INSTALL_REQUIRES,
+    extras_require={
+        'dev': DEV_REQUIRES,
+        'build': BUILD_REQUIRES,
+    },
+    python_requires='>=3.8',
+    classifiers=[
+        'Development Status :: 5 - Production/Stable',
+        'Intended Audience :: End Users/Desktop',
+        'Intended Audience :: System Administrators',
+        'License :: OSI Approved :: MIT License',
+        'Operating System :: Microsoft :: Windows',
+        'Operating System :: POSIX :: Linux',
+        'Operating System :: MacOS',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Topic :: Games/Entertainment',
+        'Topic :: System :: Systems Administration',
+        'Topic :: Internet :: WWW/HTTP :: WSGI :: Application',
+    ],
+    keywords='minecraft server management web gui mods',
+    entry_points={
+        'console_scripts': [
+            'the-originals=app:main',
+        ],
+    },
+    cmdclass={
+        'build_exe': BuildExecutableCommand,
+        'clean': CleanCommand,
+        'test': TestCommand,
+    },
+    zip_safe=False,
+)
+
+# Helper functions for command-line usage
+if __name__ == '__main__':
+    if len(sys.argv) > 1:
+        command = sys.argv[1]
+        
+        if command == 'build_exe':
+            print("🚀 Building executable for easy distribution...")
+            print("This will create a standalone .exe file that your friends can run!")
+        elif command == 'test':
+            print("🧪 Running comprehensive test suite...")
+        elif command == 'clean':
+            print("🧹 Cleaning build artifacts...")
+    
+    # Run setup
+    setup() 
