@@ -12,7 +12,10 @@ from pathlib import Path
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash
 from flask_socketio import SocketIO, emit
 from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
 import psutil
 import yaml
@@ -35,10 +38,20 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Initialize extensions
 db = SQLAlchemy(app)
+migrate = Migrate(app, db)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'Please log in to access this page.'
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Initialize rate limiter
+limiter = Limiter(
+    app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour", "10 per minute"],
+    storage_uri="memory://",
+    strategy="fixed-window"
+)
 
 # Global variables
 server_process = None
@@ -929,22 +942,62 @@ def get_online_players():
 @app.route('/api/server/start', methods=['POST'])
 @login_required
 def start_server():
-    """Start the server"""
-    if not current_user.has_permission('server_control'):
-        return jsonify({'success': False, 'message': 'Permission denied'}), 403
-    
-    success, message = server_manager.start_server()
-    return jsonify({'success': success, 'message': message})
+    """Start the server with enhanced error handling"""
+    try:
+        if not current_user.has_permission('server_control'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        # Log the start attempt
+        print(f"[SERVER] Start requested by user: {current_user.username}")
+        
+        success, message = server_manager.start_server()
+        
+        if success:
+            # Update database record if needed
+            try:
+                with app.app_context():
+                    # Could update server instance status here
+                    pass
+            except Exception as db_error:
+                print(f"[WARNING] Database update failed: {db_error}")
+                # Don't fail the whole operation for database issues
+        
+        return jsonify({'success': success, 'message': message})
+        
+    except Exception as e:
+        error_msg = f"Server start failed: {str(e)}"
+        print(f"[ERROR] {error_msg}")
+        return jsonify({'success': False, 'message': error_msg}), 500
 
 @app.route('/api/server/stop', methods=['POST'])
 @login_required
 def stop_server():
-    """Stop the server"""
-    if not current_user.has_permission('server_control'):
-        return jsonify({'success': False, 'message': 'Permission denied'}), 403
-    
-    success, message = server_manager.stop_server()
-    return jsonify({'success': success, 'message': message})
+    """Stop the server with enhanced error handling"""
+    try:
+        if not current_user.has_permission('server_control'):
+            return jsonify({'success': False, 'message': 'Permission denied'}), 403
+        
+        # Log the stop attempt
+        print(f"[SERVER] Stop requested by user: {current_user.username}")
+        
+        success, message = server_manager.stop_server()
+        
+        if success:
+            # Update database record if needed
+            try:
+                with app.app_context():
+                    # Could update server instance status here
+                    pass
+            except Exception as db_error:
+                print(f"[WARNING] Database update failed: {db_error}")
+                # Don't fail the whole operation for database issues
+        
+        return jsonify({'success': success, 'message': message})
+        
+    except Exception as e:
+        error_msg = f"Server stop failed: {str(e)}"
+        print(f"[ERROR] {error_msg}")
+        return jsonify({'success': False, 'message': error_msg}), 500
 
 @app.route('/api/server/config')
 @login_required
@@ -1086,6 +1139,105 @@ def stop_tunnel():
     return jsonify({'success': success, 'message': message})
 
 # Authentication Routes
+@app.route('/health')
+def health_check():
+    """Health check endpoint for monitoring systems"""
+    try:
+        # Check database connection
+        with app.app_context():
+            db.session.execute('SELECT 1')
+            db_status = 'healthy'
+    except Exception as e:
+        db_status = f'unhealthy: {str(e)}'
+    
+    # Check server manager
+    try:
+        server_manager = MinecraftServerManager()
+        server_status = 'initialized'
+    except Exception as e:
+        server_status = f'error: {str(e)}'
+    
+    # Check update system
+    try:
+        from updater import EnhancedAutoUpdater
+        updater = EnhancedAutoUpdater()
+        update_status = 'active' if updater.is_running else 'inactive'
+    except Exception as e:
+        update_status = f'error: {str(e)}'
+    
+    health_data = {
+        'status': 'healthy' if db_status == 'healthy' else 'degraded',
+        'timestamp': datetime.utcnow().isoformat(),
+        'version': '2.0.0',
+        'services': {
+            'database': db_status,
+            'server_manager': server_status,
+            'update_system': update_status,
+            'web_interface': 'healthy'
+        },
+        'uptime': {
+            'process': psutil.Process().create_time(),
+            'formatted': str(datetime.utcnow() - datetime.fromtimestamp(psutil.Process().create_time()))
+        }
+    }
+    
+    status_code = 200 if health_data['status'] == 'healthy' else 503
+    return jsonify(health_data), status_code
+
+@app.route('/api/health/detailed')
+@login_required
+def detailed_health_check():
+    """Detailed health check for authenticated users"""
+    try:
+        # System metrics
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('.')
+        cpu_percent = psutil.cpu_percent(interval=1)
+        
+        # Database stats
+        with app.app_context():
+            user_count = User.query.count()
+            node_count = Node.query.count()
+            server_count = ServerInstance.query.count()
+        
+        detailed_data = {
+            'status': 'healthy',
+            'timestamp': datetime.utcnow().isoformat(),
+            'system': {
+                'cpu_usage': cpu_percent,
+                'memory': {
+                    'total': memory.total,
+                    'available': memory.available,
+                    'percent': memory.percent
+                },
+                'disk': {
+                    'total': disk.total,
+                    'free': disk.free,
+                    'percent': (disk.used / disk.total) * 100
+                }
+            },
+            'database': {
+                'users': user_count,
+                'nodes': node_count,
+                'servers': server_count
+            },
+            'features': {
+                'auto_updates': True,
+                'crash_reporting': True,
+                'multi_node': True,
+                'tunneling': True
+            }
+        }
+        
+        return jsonify(detailed_data)
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'timestamp': datetime.utcnow().isoformat(),
+            'error': str(e)
+        }), 500
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -1457,9 +1609,13 @@ if __name__ == '__main__':
     updater = create_update_routes(app, socketio)
     
     port = int(os.environ.get('SERVER_PORT', 3000))
+    debug_mode = os.environ.get('DEBUG', 'False').lower() == 'true'
+    
     print("Starting The Originals - Minecraft Server Manager v2.0.0...")
     print(f"Access the web interface at: http://localhost:{port}")
     print("Default login: admin / admin123")
     print("Professional features: Auto-updates, Crash reporting, System tray")
     print(f"[UPDATE] Background update checker started (interval: {updater.check_interval}s)")
-    socketio.run(app, host='0.0.0.0', port=port, debug=True) 
+    print(f"[CONFIG] Debug mode: {'ENABLED' if debug_mode else 'DISABLED'}")
+    
+    socketio.run(app, host='0.0.0.0', port=port, debug=debug_mode) 

@@ -3,6 +3,7 @@ Flask==2.3.3
 Flask-SocketIO==5.3.6
 Flask-SQLAlchemy==3.0.5
 Flask-Login==0.6.2
+Flask-Migrate==4.0.5
 Werkzeug==2.3.7
 
 # Security Dependencies
