@@ -46,8 +46,8 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Initialize rate limiter
 limiter = Limiter(
-    app,
-    key_func=get_remote_address,
+    get_remote_address,
+    app=app,
     default_limits=["200 per day", "50 per hour", "10 per minute"],
     storage_uri="memory://",
     strategy="fixed-window"
@@ -1577,6 +1577,10 @@ def handle_send_command(data):
         emit('command_result', {'success': success, 'message': message, 'command': command})
 
 if __name__ == '__main__':
+    # Initialize enhanced logging system
+    from logging_config import setup_logging, log_startup_info
+    setup_logging(app)
+    
     # Create templates directory and files
     os.makedirs('templates', exist_ok=True)
     os.makedirs('static', exist_ok=True)

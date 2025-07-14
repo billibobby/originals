@@ -4,11 +4,11 @@ Flask-SocketIO==5.3.6
 Flask-SQLAlchemy==3.0.5
 Flask-Login==0.6.2
 Flask-Migrate==4.0.5
+Flask-Limiter==3.0.0
 Werkzeug==2.3.7
 
 # Security Dependencies
 Flask-WTF==1.1.1           # CSRF protection
-Flask-Limiter==3.0.1       # Rate limiting
 bcrypt==4.0.1              # Secure password hashing
 
 # HTTP and Network
@@ -18,7 +18,7 @@ python-socketio==5.9.0
 # System and Process Management
 psutil==5.9.5
 python-nmap==0.7.1
-paramiko==3.3.1
+paramiko==3.5.0
 
 # Configuration and Environment
 python-dotenv==1.0.0
